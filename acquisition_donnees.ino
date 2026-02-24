@@ -1,24 +1,34 @@
 #include <Wire.h>
 #include <DHT.h>
+#include <HX711.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <Adafruit_MMA8451.h>
+#include <Adafruit_Sensor.h>
 
 // --- IDENTIFIANTS LORAWAN ---
 const char *devEui = "CDEADAEEACFADEEA"; 
 const char *appEui = "0000000000000000";
 const char *appKey = "0FF6C98BEE426A6DD4C1CBE40804A4C3"; 
 
-// --- PINS ---
+// --- PINS (uPesy Low Power) ---
+#define PIN_BAT 35      
 #define DHT_INT_PIN 27
 #define DHT_EXT_PIN 2
 #define ONE_WIRE_BUS 14
+#define IA_XIAO_SIGNAL 26
+#define HX711_DOUT 33
+#define HX711_SCK 32
 #define SDA_PIN 21
 #define SCL_PIN 22
 
+// Instances
 DHT dht_int(DHT_INT_PIN, DHT22);
 DHT dht_ext(DHT_EXT_PIN, DHT22);
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
+HX711 scale;
+Adafruit_MMA8451 mma = Adafruit_MMA8451();
 
 void sendAT(String command) {
   Serial.println(command); 
@@ -29,52 +39,61 @@ void setup() {
   Serial.begin(9600); 
   delay(2000);
   
-  // Initialisation I2C pour le SEN0390
   Wire.begin(SDA_PIN, SCL_PIN);
-  
   dht_int.begin();
   dht_ext.begin();
   sensors.begin();
+  
+  // On initialise quand même l'objet scale au cas où Adam branche les fils
+  scale.begin(HX711_DOUT, HX711_SCK);
+
+  // Init Accel
+  if (!mma.begin()) Serial.println("MMA Fail");
+  else mma.setRange(MMA8451_RANGE_2_G);
 
   // CONFIGURATION LORA
+  sendAT("AT+ID=DevEui,\"" + String(devEui) + "\"");
+  sendAT("AT+ID=AppEui,\"" + String(appEui) + "\""); // AppEUI configuré
+  sendAT("AT+KEY=APPKEY,\"" + String(appKey) + "\"");
   sendAT("AT+MODE=LWOTAA");
   sendAT("AT+JOIN"); 
-  delay(15000); 
+  delay(15000);
 }
 
 void loop() {
-  // 1. LECTURE DHT & MOB
+  // 1. Batterie (uPesy internal bridge)
+  int raw_bat = analogRead(PIN_BAT);
+  float v_bat = (raw_bat * 3.3 / 4095.0) * 2.0;
+  uint8_t bat = (uint8_t)constrain(map(v_bat * 100, 320, 415, 0, 100), 0, 100);
+
+  // 2. Accéléromètre & Orientation
+  sensors_event_t event; 
+  mma.getEvent(&event);
+  uint8_t orient = mma.getOrientation();
+  int8_t accel_z = (int8_t)event.acceleration.z;
+
+  // 3. Poids : Forcé à 0 pour le test
+  uint16_t poids_val = 0; 
+
+  // 4. Températures MOB
   sensors.requestTemperatures();
-  float ti = dht_int.readTemperature();
-  float hi = dht_int.readHumidity();
-  float te = dht_ext.readTemperature();
-  float he = dht_ext.readHumidity();
-  float tm1 = sensors.getTempCByIndex(0);
-  float tm2 = sensors.getTempCByIndex(1);
+  int16_t ts1 = (int16_t)(sensors.getTempCByIndex(0) * 100);
+  int16_t ts2 = (int16_t)(sensors.getTempCByIndex(1) * 100);
 
-  // 2. LECTURE LUX (I2C)
-  uint16_t lux_val = readSEN0390();
+  // 5. DHT & Lux
+  int16_t ti = (int16_t)(dht_int.readTemperature() * 10);
+  uint16_t hi = (uint16_t)(dht_int.readHumidity() * 10);
+  int16_t te = (int16_t)(dht_ext.readTemperature() * 10);
+  uint8_t he = (uint8_t)dht_ext.readHumidity();
+  uint16_t lux = readSEN0390();
 
-  // 3. CONVERSIONS
-  if (isnan(ti)) ti = 0; if (isnan(hi)) hi = 0;
-  if (isnan(te)) te = 0; if (isnan(he)) he = 0;
-  if (tm1 == DEVICE_DISCONNECTED_C) tm1 = 0;
-  if (tm2 == DEVICE_DISCONNECTED_C) tm2 = 0;
+  // 6. Construction Payload (19 octets)
+  char payload[40];
+  sprintf(payload, "%02X%02X%02X%02X%04X%04X%04X%04X%04X%04X%02X%04X",
+          bat, digitalRead(IA_XIAO_SIGNAL), orient, (uint8_t)accel_z, 
+          poids_val, ts1, ts2, ti, hi, te, he, lux);
 
-  int16_t ti_v = (int16_t)(ti * 10);
-  uint16_t hi_v = (uint16_t)(hi * 10);
-  int16_t te_v = (int16_t)(te * 10);
-  uint8_t he_v = (uint8_t)he;
-  int16_t tm1_v = (int16_t)(tm1 * 100);
-  int16_t tm2_v = (int16_t)(tm2 * 100);
-
-  // 4. CONSTRUCTION TRAME (17 octets)
-  // Payload format: Bat(1), Alert(1), Poids(2), MOB1(2), MOB2(2), DHTiT(2), DHTiH(2), DHTeT(2), DHTeH(1), Lux(2)
-  char payload[35];
-  sprintf(payload, "64000000%04X%04X%04X%04X%04X%02X%04X",
-          (uint16_t)tm1_v, (uint16_t)tm2_v, (uint16_t)ti_v, hi_v, (uint16_t)te_v, he_v, lux_val);
-
-  // 5. ENVOI
+  // 7. Envoi
   Serial.print("AT+MSGHEX=\"");
   Serial.print(payload);
   Serial.print("\"\r\n");
@@ -84,14 +103,11 @@ void loop() {
 
 uint16_t readSEN0390() {
   uint16_t level = 0;
-  Wire.beginTransmission(0x23); // Adresse I2C par défaut du BH1750
-  Wire.write(0x10);             // Mode Haute Résolution
-  if (Wire.endTransmission() != 0) return 0; // Erreur de bus
-  
+  Wire.beginTransmission(0x23);
+  Wire.write(0x10); 
+  if (Wire.endTransmission() != 0) return 0;
   delay(180);
   Wire.requestFrom(0x23, 2);
-  if (Wire.available() == 2) {
-    level = Wire.read() << 8 | Wire.read();
-  }
-  return (uint16_t)(level / 1.2); // Conversion selon datasheet
+  if (Wire.available() == 2) level = Wire.read() << 8 | Wire.read();
+  return (uint16_t)(level / 1.2);
 }
