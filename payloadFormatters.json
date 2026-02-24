@@ -7,30 +7,30 @@ function decodeUplink(input) {
   }
 
   // --- IDENTIFIANT UNIQUE BEEP ---
-  data.key = "mwjsl0uzqqsbjwyj"; // [cite: 23, 38]
+  data.key = "mwjsl0uzqqsbjwyj"; 
 
   // --- ALIMENTATION (Clé 'bv') ---
-  data.bv = (bytes[0] * 0.012) + 3.0; // 
+  data.bv = (bytes[0] * 0.012) + 3.0;
 
   // --- POIDS (Clé 'weight_kg') ---
-  data.weight_kg = (bytes[4] << 8 | bytes[5]) / 100.0; // 
+  data.weight_kg = (bytes[4] << 8 | bytes[5]) / 100.0;
 
   // --- TEMPÉRATURES (Selon value_key de l'image) ---
-  data.t_1 = (readInt16(bytes, 6)) / 100.0; // MOB 1 
-  data.t_2 = (readInt16(bytes, 8)) / 100.0; // MOB 2 
+  data.t_1 = (readInt16(bytes, 6)) / 100.0; // sonde 1 
+  data.t_2 = (readInt16(bytes, 8)) / 100.0; // sonde 2 
   data.t = (readInt16(bytes, 10)) / 10.0;  // Intérieure 
   data.t_0 = (readInt16(bytes, 14)) / 10.0;    // Extérieure 
 
   // --- HUMIDITÉ (Clé 'h') ---
   data.t_3 = bytes[16]; // Humidité Extérieure 
-  data.h = (bytes[12] << 8 | bytes[13]) / 10.0; // Humidité Intérieure (clé libre)
+  data.h = (bytes[12] << 8 | bytes[13]) / 10.0; // Humidité Intérieure
 
   // --- LUMINOSITÉ (Clé 'l') ---
   data.l = (bytes[17] << 8 | bytes[18]); // Unité lux 
 
   // --- QUALITÉ SIGNAL ---
-  data.rssi = (bytes[19] > 127) ? bytes[19] - 256 : bytes[19]; // 
-  data.snr = (bytes[20] > 127) ? bytes[20] - 256 : bytes[20];   // 
+  data.rssi = (bytes[19] > 127) ? bytes[19] - 256 : bytes[19];
+  data.snr = (bytes[20] > 127) ? bytes[20] - 256 : bytes[20];
 
   // --- DONNÉES DE SÉCURITÉ (Hors BEEP standard) ---
   data.alerte_ia = bytes[1];
