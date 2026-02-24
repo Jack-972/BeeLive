@@ -82,5 +82,5 @@ void loop() {
   Serial.print(payload);
   Serial.print("\"\r\n");
 
-  delay(30000); 
+  delay(10000); 
 }
