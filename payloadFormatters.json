@@ -2,49 +2,44 @@ function decodeUplink(input) {
   var bytes = input.bytes;
   var data = {};
 
-  // Vérification de la taille (Optionnel mais recommandé pour le debug)
   if (bytes.length < 21) {
     return { errors: ["Payload trop court !"] };
   }
 
-  // Octet 0 : Batterie (%)
-  data.batterie = bytes[0];
+  // --- IDENTIFIANT UNIQUE BEEP ---
+  data.key = "mwjsl0uzqqsbjwyj"; // [cite: 23, 38]
 
-  // Octet 1 : Alerte IA
+  // --- ALIMENTATION (Clé 'bv') ---
+  data.bv = (bytes[0] * 0.012) + 3.0; // 
+
+  // --- POIDS (Clé 'weight_kg') ---
+  data.weight_kg = (bytes[4] << 8 | bytes[5]) / 100.0; // 
+
+  // --- TEMPÉRATURES (Selon value_key de l'image) ---
+  data.t_1 = (readInt16(bytes, 6)) / 100.0; // MOB 1 
+  data.t_2 = (readInt16(bytes, 8)) / 100.0; // MOB 2 
+  data.t = (readInt16(bytes, 10)) / 10.0;  // Intérieure 
+  data.t_0 = (readInt16(bytes, 14)) / 10.0;    // Extérieure 
+
+  // --- HUMIDITÉ (Clé 'h') ---
+  data.t_3 = bytes[16]; // Humidité Extérieure 
+  data.h = (bytes[12] << 8 | bytes[13]) / 10.0; // Humidité Intérieure (clé libre)
+
+  // --- LUMINOSITÉ (Clé 'l') ---
+  data.l = (bytes[17] << 8 | bytes[18]); // Unité lux 
+
+  // --- QUALITÉ SIGNAL ---
+  data.rssi = (bytes[19] > 127) ? bytes[19] - 256 : bytes[19]; // 
+  data.snr = (bytes[20] > 127) ? bytes[20] - 256 : bytes[20];   // 
+
+  // --- DONNÉES DE SÉCURITÉ (Hors BEEP standard) ---
   data.alerte_ia = bytes[1];
-
-  // Octet 2 : Orientation (MMA8451)
-  var orientations = ["Verticale", "Portrait Down", "Portrait Up Back", "Portrait Down Back", "Landscape Right", "Landscape Left", "Face vers le haut", "Face vers le bas"];
   data.orientation_id = bytes[2];
+  data.accel_z = (bytes[3] > 127) ? bytes[3] - 256 : bytes[3];
+  
+  var orientations = ["Verticale", "Portrait Down", "Portrait Up Back", "Portrait Down Back", "Landscape Right", "Landscape Left", "Face vers le haut", "Face vers le bas"];
   data.etat_ruche = orientations[bytes[2]] || "Inconnu";
 
-  // Octet 3 : Accélération Z (Signé int8)
-  data.accel_z = (bytes[3] > 127) ? bytes[3] - 256 : bytes[3];
-
-  // Octets 4-5 : Poids (uint16, x100)
-  data.poids_kg = (bytes[4] << 8 | bytes[5]) / 100.0;
-
-  // Octets 6-7 & 8-9 : Sondes MOB (int16, x100)
-  data.temp_mob1 = (readInt16(bytes, 6)) / 100.0;
-  data.temp_mob2 = (readInt16(bytes, 8)) / 100.0;
-
-  // Octets 10-11 & 12-13 : DHT Intérieur (T x10, H x10)
-  data.temp_int = (readInt16(bytes, 10)) / 10.0;
-  data.hum_int = (bytes[12] << 8 | bytes[13]) / 10.0;
-
-  // Octets 14-15 & 16 : DHT Extérieur (T x10, H uint8)
-  data.temp_ext = (readInt16(bytes, 14)) / 10.0;
-  data.hum_ext = bytes[16];
-
-  // Octets 17-18 : Lux (uint16)
-  data.lux = (bytes[17] << 8 | bytes[18]);
-
-  // Octet 19 : RSSI (Signé)
-  data.rssi_payload = (bytes[19] > 127) ? bytes[19] - 256 : bytes[19];
-  
-  // Octet 20 : SNR (Signé) - Correction ici
-  data.snr_payload = (bytes[20] > 127) ? bytes[20] - 256 : bytes[20];
-  
   return {
     data: data,
     warnings: [],
@@ -52,7 +47,6 @@ function decodeUplink(input) {
   };
 }
 
-// Fonction utilitaire pour lire les entiers signés
 function readInt16(bytes, index) {
   var value = (bytes[index] << 8 | bytes[index + 1]);
   return (value & 0x8000) ? (value - 0x10000) : value;
