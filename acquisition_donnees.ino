@@ -13,12 +13,12 @@ const char *appKey = "0FF6C98BEE426A6DD4C1CBE40804A4C3";
 
 // --- CONFIGURATION DES PINS ---
 #define PIN_BAT 35 
-#define DHT_INT_PIN 27
-#define DHT_EXT_PIN 2
-#define ONE_WIRE_BUS 14
-#define IA_XIAO_SIGNAL 26
-#define HX711_DOUT 32 
-#define HX711_SCK 33
+#define DHT_INT_PIN 26    // Avant: 27
+#define DHT_EXT_PIN 5     // Avant: 2
+#define ONE_WIRE_BUS 27   // Avant: 14
+#define IA_XIAO_SIGNAL 14 // Avant: 26
+#define HX711_DOUT 33     // Avant: 32
+#define HX711_SCK 32      // Avant: 33
 #define SDA_PIN 21
 #define SCL_PIN 22
 
@@ -35,7 +35,7 @@ HX711 scale;
 Adafruit_MMA8451 mma = Adafruit_MMA8451();
 
 // Variables globales pour le signal
-int8_t real_rssi = -100; // Valeur par défaut (faible)
+int8_t real_rssi = -100; 
 int8_t real_snr = -10;
 
 void sendAT(String command) {
@@ -43,16 +43,13 @@ void sendAT(String command) {
   delay(1000); 
 }
 
-// Fonction pour récupérer le vrai RSSI et SNR depuis le module
 void updateSignalQuality() {
-  Serial.println("AT+CSQ"); // Demande la qualité du signal
+  Serial.println("AT+CSQ"); 
   delay(500);
   if (Serial.available()) {
     String response = Serial.readString();
-    // La réponse ressemble à : "+CSQ: RSSI -65, SNR 8"
     int rssiPos = response.indexOf("RSSI ");
     int snrPos = response.indexOf("SNR ");
-    
     if (rssiPos != -1 && snrPos != -1) {
       real_rssi = response.substring(rssiPos + 5, response.indexOf(",", rssiPos)).toInt();
       real_snr = response.substring(snrPos + 4).toInt();
@@ -86,27 +83,26 @@ void setup() {
 }
 
 void loop() {
-  // 1. Mettre à jour les infos radio avant l'envoi
   updateSignalQuality();
 
-  // 2. Batterie
+  // 1. Batterie
   int raw_bat = analogRead(PIN_BAT);
   float v_bat = (raw_bat * 3.3 / 4095.0) * 2.0; 
   uint8_t bat = (uint8_t)constrain(map(v_bat * 100, 320, 415, 0, 100), 0, 100);
 
-  // 3. Accéléromètre & IA
+  // 2. Accéléromètre & IA
   sensors_event_t event; 
   mma.getEvent(&event);
   uint8_t orient = mma.getOrientation();
   int8_t accel_z = (int8_t)event.acceleration.z;
   uint8_t alerte_ia = digitalRead(IA_XIAO_SIGNAL);
 
-  // 4. Poids
+  // 3. Poids
   float p_kg = scale.get_units(5);
   if (p_kg < 0) p_kg = 0; 
   uint16_t poids_val = (uint16_t)(p_kg * 100); 
 
-  // 5. Températures & Environnement
+  // 4. Températures & Environnement
   sensors.requestTemperatures();
   int16_t ts1 = (int16_t)(sensors.getTempCByIndex(0) * 100);
   int16_t ts2 = (int16_t)(sensors.getTempCByIndex(1) * 100);
@@ -116,19 +112,19 @@ void loop() {
   uint8_t he = (uint8_t)dht_ext.readHumidity();
   uint16_t lux = readSEN0390();
 
-  // 6. Construction Payload (21 octets)
-  char payload[45];
+  // 5. Construction Payload (Sécurisée à 100 chars pour éviter le crash)
+  char payload[100]; 
   sprintf(payload, "%02X%02X%02X%02X%04X%04X%04X%04X%04X%04X%02X%04X%02X%02X",
           bat, alerte_ia, orient, (uint8_t)accel_z, 
-          poids_val, ts1, ts2, ti, hi, te, he, lux, 
+          poids_val, (uint16_t)ts1, (uint16_t)ts2, (uint16_t)ti, hi, (uint16_t)te, he, lux, 
           (uint8_t)real_rssi, (uint8_t)real_snr);
 
-  // 7. Envoi
+  // 6. Envoi
   Serial.print("AT+MSGHEX=\"");
   Serial.print(payload);
   Serial.print("\"\r\n");
 
-  delay(10000); 
+  delay(20000); // 20 secondes entre chaque envoi
 }
 
 uint16_t readSEN0390() {
