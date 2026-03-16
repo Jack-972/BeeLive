@@ -41,7 +41,7 @@
 
 /* Includes ---------------------------------------------------------------- */
 #include <PDM.h>
-#include <BeeSound_inferencing.h>
+#include <BEELIVE-AUDIO-AI_inferencing.h>
 
 /** Audio buffers, pointers and selectors */
 typedef struct {
@@ -58,6 +58,13 @@ static signed short *sampleBuffer;
 static bool debug_nn = false; // Set this to true to see e.g. features generated from the raw signal
 static int print_results = -(EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW);
 
+// --- Paramètres pour le lissage des résultats ---
+const int NB_ACQUISITIONS = 7;         // Nombre de cycles à moyenner
+const float SEUIL_CERTITUDE = 0.70;    // Seuil de 75% pour valider l'envoi
+float accumulateur_scores[EI_CLASSIFIER_LABEL_COUNT] = {0}; 
+int compteur_cycles = 0;
+
+
 /**
  * @brief      Arduino setup function
  */
@@ -65,9 +72,22 @@ void setup()
 {
     // put your setup code here, to run once:
     Serial.begin(115200);
+    Serial1.begin(115200); // Pour communiquer avec l'ESP32
     // comment out the below line to cancel the wait for USB connection (needed for native USB)
     while (!Serial);
     Serial.println("Edge Impulse Inferencing Demo");
+
+    Serial.println("=== INITIALISATION NANO 33 BLE AI ===");
+
+    // --- AFFICHAGE DE LA CORRESPONDANCE DES INDEX ---
+    Serial.println("\nLISTE DES INDEX POUR L'ESP32 :");
+    for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+        Serial.print("  Index [");
+        Serial.print(ix);
+        Serial.print("] -> Label: ");
+        Serial.println(ei_classifier_inferencing_categories[ix]);
+    }
+    Serial.println("------------------------------------\n");
 
     // summary of inferencing settings (from model_metadata.h)
     ei_printf("Inferencing settings:\n");
@@ -101,28 +121,59 @@ void loop()
     ei_impulse_result_t result = {0};
 
     EI_IMPULSE_ERROR r = run_classifier_continuous(&signal, &result, debug_nn);
-    if (r != EI_IMPULSE_OK) {
-        ei_printf("ERR: Failed to run classifier (%d)\n", r);
-        return;
+    if (r != EI_IMPULSE_OK) return;
+
+    // 1. On accumule les scores de l'acquisition actuelle
+    for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+        accumulateur_scores[ix] += result.classification[ix].value;
     }
+    compteur_cycles++;
 
-    if (++print_results >= (EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW)) {
-        // print the predictions
-        ei_printf("Predictions ");
-        ei_printf("(DSP: %d ms., Classification: %d ms., Anomaly: %d ms.)",
-            result.timing.dsp, result.timing.classification, result.timing.anomaly);
-        ei_printf(": \n");
+    // 2. Une fois qu'on a atteint 7 acquisitions
+    if (compteur_cycles >= NB_ACQUISITIONS) {
+        int index_max = -1;
+        float score_max = 0;
+
+        // On cherche quelle classe a la moyenne la plus élevée
         for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
-            ei_printf("    %s: %.5f\n", result.classification[ix].label,
-                      result.classification[ix].value);
+            float moyenne = accumulateur_scores[ix] / NB_ACQUISITIONS;
+            if (moyenne > score_max) {
+                score_max = moyenne;
+                index_max = ix;
+            }
         }
-#if EI_CLASSIFIER_HAS_ANOMALY == 1
-        ei_printf("    anomaly score: %.3f\n", result.anomaly);
-#endif
 
-        print_results = 0;
+        // 3. On vérifie si la meilleure moyenne dépasse notre seuil
+        if (index_max != -1 && score_max >= SEUIL_CERTITUDE) {
+            
+            // --- MODIFICATION ICI ---
+            // On envoie seulement le numéro de la classe (index)
+            Serial1.println(index_max); 
+            
+            // Debug sur le PC pour savoir quel chiffre correspond à quoi
+            Serial.print(">>> ENVOI INDEX : ");
+            Serial.print(index_max);
+            Serial.print(" (Label: ");
+            Serial.print(result.classification[index_max].label);
+            Serial.print(", Certitude: ");
+            Serial.print(score_max * 100);
+            Serial.println("%)");
+            // --------------------------
+
+        } else {
+            // Optionnel : envoyer un code spécifique (ex: -1 ou 99) pour "Rien"
+            // Serial1.println(-1); 
+            Serial.println("Certitude trop faible.");
+        }
+
+        // 4. Réinitialisation pour les 7 prochains cycles
+        for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+            accumulateur_scores[ix] = 0;
+        }
+        compteur_cycles = 0;
     }
 }
+
 
 /**
  * @brief      PDM buffer full callback
@@ -196,8 +247,7 @@ static bool microphone_inference_start(uint32_t n_samples)
     }
 
     // set the gain, defaults to 20
-    // REV2 board: max gain is 80 (vs 255 for original board)
-    PDM.setGain(80);
+    PDM.setGain(127);
 
     record_ready = true;
 
