@@ -31,11 +31,19 @@ DallasTemperature sensors(&oneWire);
 HX711 scale;
 Adafruit_MMA8451 mma = Adafruit_MMA8451();
 
-// --- VARIABLES RTC ---
+// --- VARIABLES RTC (Indépendantes pour chaque capteur) ---
 RTC_DATA_ATTR int bootCount = 0;
 RTC_DATA_ATTR float dernier_poids = 0; 
 RTC_DATA_ATTR int minutes_entre_envois = 1; 
-RTC_DATA_ATTR float offset_poids = 0.0;      
+
+// Liste des offsets indépendants
+RTC_DATA_ATTR float off_poids = 0.0; // Offset Poids
+RTC_DATA_ATTR float off_ti    = 0.0; // Offset Temp Int (DHT)
+RTC_DATA_ATTR float off_hi    = 0.0; // Offset Humidité Int (DHT)
+RTC_DATA_ATTR float off_te    = 0.0; // Offset Temp Ext (DHT)
+RTC_DATA_ATTR float off_he    = 0.0; // Offset Humidité Ext (DHT)
+RTC_DATA_ATTR float off_ts1   = 0.0; // Offset Sonde 1 (DS18B20)
+RTC_DATA_ATTR float off_ts2   = 0.0; // Offset Sonde 2 (DS18B20)  
 
 uint8_t alerte_ia = 0; 
 int8_t real_rssi = -100; 
@@ -111,23 +119,29 @@ void setup() {
     }
   }
 
-  // 4. LECTURE DES CAPTEURS (LOGIQUE DE TON COMMIT)
+  // 4. LECTURE DES CAPTEURS AVEC OFFSETS DÉDIÉS
   sensors.requestTemperatures();
-  float ts1 = sensors.getTempCByIndex(0); // MOB 1
-  float ts2 = sensors.getTempCByIndex(1); // MOB 2
+  // Sondes température (DS18B20)
+  float ts1 = sensors.getTempCByIndex(0);
+  float ts2 = sensors.getTempCByIndex(1);
+  ts1 = (ts1 == DEVICE_DISCONNECTED_C ? 0 : ts1 + off_ts1);
+  ts2 = (ts2 == DEVICE_DISCONNECTED_C ? 0 : ts2 + off_ts2);
   
-  float ti = dht_int.readTemperature();
-  float hi = dht_int.readHumidity();
+  // DHT Intérieur
+  float raw_ti = dht_int.readTemperature();
+  float raw_hi = dht_int.readHumidity();
+  float ti = (isnan(raw_ti) ? 0 : raw_ti) + off_ti;
+  uint16_t hi = (uint16_t)((isnan(raw_hi) ? 0 : raw_hi + off_hi));
   
-  // Sécurité IsNan (Comme dans ton commit)
-  if (isnan(ti)) ti = 0; if (isnan(hi)) hi = 0;
-  if (isnan(te)) te = 0; if (isnan(he)) he = 0;
-  if (ts1 == DEVICE_DISCONNECTED_C) ts1 = 0;
-  if (ts2 == DEVICE_DISCONNECTED_C) ts2 = 0;
+  // DHT Extérieur
+  float raw_te = dht_ext.readTemperature();
+  float raw_he = dht_ext.readHumidity();
+  te = (isnan(raw_te) ? 0 : raw_te) + off_te;
+  he = (uint8_t)((isnan(raw_he) ? 0 : raw_he + off_he));
 
+  // Balance
   scale.begin(HX711_DOUT, HX711_SCK);
-  scale.set_scale(-29126.0); scale.set_offset(-95280);
-  float p_kg = scale.get_units(5) + offset_poids;
+  float p_kg = scale.get_units(5) + off_poids;
   uint16_t poids_val = (uint16_t)(max(0.0f, p_kg) * 100);
 
   // 5. ESSAIMAGE
@@ -153,22 +167,26 @@ void setup() {
 
   Serial.print("AT+MSGHEX=\""); Serial.print(payload); Serial.print("\"\r\n");
 
-  // 8. DOWNLINK ET DODO
-  delay(5000);
+  // 8. LOGIQUE DOWNLINK AVEC IDS DÉDIÉS
+  delay(5000); 
   if (Serial.available()) {
       String rx = Serial.readString();
       if (rx.indexOf("DATA: ") != -1) {
           String hexCmd = rx.substring(rx.indexOf("DATA: ") + 6, rx.indexOf("DATA: ") + 10);
           uint8_t cmd = strtol(hexCmd.substring(0, 2).c_str(), NULL, 16);
-          uint8_t val = strtol(hexCmd.substring(2, 4).c_str(), NULL, 16);
-          if (cmd == 0x01 && val >= 1){
-            minutes_entre_envois = val;
-            beep(100, 3);
-          } 
-          else if (cmd == 0x02){
-            offset_poids = (float)((int8_t)val) / 10.0;
-            beep(100, 2);
+          int8_t val  = (int8_t)strtol(hexCmd.substring(2, 4).c_str(), NULL, 16);
+
+          switch (cmd) {
+              case 0x01: minutes_entre_envois = (val < 2 ? 2 : val); break; // Fréquence
+              case 0x02: off_poids = (float)val / 10.0; break;             // Poids (0.1kg)
+              case 0x03: off_ti    = (float)val / 10.0; break;             // Temp Int (0.1°C)
+              case 0x04: off_hi    = (float)val;        break;             // Humidité Int (1%)
+              case 0x05: off_te    = (float)val / 10.0; break;             // Temp Ext (0.1°C)
+              case 0x06: off_he    = (float)val;        break;             // Humidité Ext (1%)
+              case 0x07: off_ts1   = (float)val / 10.0; break;             // Sonde 1 (0.1°C)
+              case 0x08: off_ts2   = (float)val / 10.0; break;             // Sonde 2 (0.1°C)
           }
+          beep(100, 2);
       }
   }
 
