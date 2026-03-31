@@ -6,27 +6,24 @@
 #include <Adafruit_MMA8451.h>
 #include <Adafruit_Sensor.h>
 
-// --- IDENTIFIANTS LORAWAN ---
-const char *devEui = "CDEADAEEACFADEEA"; 
-const char *appEui = "0000000000000000";
-const char *appKey = "0FF6C98BEE426A6DD4C1CBE40804A4C3"; 
-
-// --- CONFIGURATION DES PINS ---
+// --- CONFIGURATION PINS ---
+#define PIN_BUZZER 13
+#define PIN_XIAO_EN 4      
+#define PIN_NANO_EN 0      
+#define DHT_INT_PIN 26
 #define PIN_BAT 35 
-#define DHT_INT_PIN 26    // Avant: 27
-#define DHT_EXT_PIN 5     // Avant: 2
-#define ONE_WIRE_BUS 27   // Avant: 14
-#define IA_XIAO_SIGNAL 14 // Avant: 26
-#define HX711_DOUT 33     // Avant: 32
-#define HX711_SCK 32      // Avant: 33
-#define SDA_PIN 21
-#define SCL_PIN 22
+#define DHT_EXT_PIN 5
+#define ONE_WIRE_BUS 27
+#define IA_SIGNAL_PIN 14   
+#define HX711_DOUT 33
+#define HX711_SCK 32
 
-// --- CALIBRATION ---
-const float MON_FACTEUR = -29126.0; 
-const long MA_TARE_FIXE = -95280; 
+// --- CONFIGURATION SYSTÈME ---
+#define uS_TO_S_FACTOR 1000000ULL  
+#define SEUIL_TEMP_EXT 12.0
+#define SEUIL_LUX_JOUR 50
 
-// Instances
+// --- INSTANCES ---
 DHT dht_int(DHT_INT_PIN, DHT22);
 DHT dht_ext(DHT_EXT_PIN, DHT22);
 OneWire oneWire(ONE_WIRE_BUS);
@@ -34,106 +31,191 @@ DallasTemperature sensors(&oneWire);
 HX711 scale;
 Adafruit_MMA8451 mma = Adafruit_MMA8451();
 
-// Variables globales pour le signal
-int8_t real_rssi = -100; 
-int8_t real_snr = -10;
+// --- VARIABLES RTC ---
+RTC_DATA_ATTR int bootCount = 0;
+RTC_DATA_ATTR float dernier_poids = 0; 
+RTC_DATA_ATTR int minutes_entre_envois = 1; 
 
-void sendAT(String command) {
-  Serial.println(command); 
-  delay(1000); 
+RTC_DATA_ATTR float off_poids = 0.0;
+RTC_DATA_ATTR float off_ti    = 0.0;
+RTC_DATA_ATTR float off_hi    = 0.0;
+RTC_DATA_ATTR float off_te    = 0.0;
+RTC_DATA_ATTR float off_he    = -11.0; // Ton offset humidité
+RTC_DATA_ATTR float off_ts1   = 0.0;
+RTC_DATA_ATTR float off_ts2   = 1.0;
+
+uint8_t alerte_ia = 0; 
+int8_t real_rssi = -100; 
+int8_t real_snr = 5;
+
+void beep(int duree, int repetitions) {
+  for(int i=0; i<repetitions; i++) {
+    digitalWrite(PIN_BUZZER, HIGH); delay(duree);
+    digitalWrite(PIN_BUZZER, LOW);  delay(duree);
+  }
 }
 
 void updateSignalQuality() {
   Serial.println("AT+CSQ"); 
-  delay(500);
+  delay(1000); 
   if (Serial.available()) {
-    String response = Serial.readString();
-    int rssiPos = response.indexOf("RSSI ");
-    int snrPos = response.indexOf("SNR ");
-    if (rssiPos != -1 && snrPos != -1) {
-      real_rssi = response.substring(rssiPos + 5, response.indexOf(",", rssiPos)).toInt();
-      real_snr = response.substring(snrPos + 4).toInt();
-    }
+    String res = Serial.readString();
+    int rPos = res.indexOf("RSSI ");
+    if (rPos != -1) real_rssi = res.substring(rPos + 5, res.indexOf(",", rPos)).toInt();
   }
 }
 
 void setup() {
-  Serial.begin(9600); 
-  delay(2000);
+  // 1. INITIALISATION MATÉRIELLE
+  pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(PIN_XIAO_EN, OUTPUT);
+  pinMode(PIN_NANO_EN, OUTPUT);
+  pinMode(IA_SIGNAL_PIN, INPUT_PULLDOWN);
+
+  if (bootCount == 0) beep(200, 1);
+  bootCount++;
+
+  digitalWrite(PIN_XIAO_EN, HIGH);
+  digitalWrite(PIN_NANO_EN, HIGH);
   
-  Wire.begin(SDA_PIN, SCL_PIN);
+  Serial.begin(9600);    
+  Serial2.begin(115200); 
+  Wire.begin(21, 22);
+  
   dht_int.begin();
   dht_ext.begin();
   sensors.begin();
+  delay(2000); 
+
+  // 2. LECTURE MÉTÉO INITIALE
+  float te_init = dht_ext.readTemperature();
+  float raw_lux_check = 0;
   
+  // Petit check lux rapide
+  Wire.beginTransmission(0x23); Wire.write(0x10); Wire.endTransmission();
+  delay(200);
+  Wire.requestFrom(0x23, 2);
+  if(Wire.available()==2) raw_lux_check = (Wire.read() << 8 | Wire.read()) / 1.2;
+
+  // 3. LOGIQUE IA (AUDIO PRIORITAIRE)
+  float temp_ia = isnan(te_init) ? 20.0 : te_init;
+  // A activer pour le deep sleep
+  // if (temp_ia > SEUIL_TEMP_EXT && raw_lux_check > SEUIL_LUX_JOUR) {
+    Serial.println("--- DÉBUT VEILLE IA ---");
+    
+    unsigned long startIA = millis();
+    while (millis() - startIA < 12000) { 
+      // Debug visuel du signal XIAO
+      int signalVision = digitalRead(IA_SIGNAL_PIN);
+      Serial.print("Signal PIN 14 : "); Serial.println(signalVision);
+
+      if (Serial2.available() > 0) {
+        uint8_t index = Serial2.read();
+        Serial.print("Audio reçu index : "); Serial.println(index);
+        if (index == 4) alerte_ia = 4; 
+        else if (index == 2) alerte_ia = 3; 
+        else if (index == 0) alerte_ia = 1;
+        if (alerte_ia > 0){
+          beep(100, 3);
+          break;
+        }
+      }
+
+      if (signalVision == HIGH) { 
+          Serial.println("!!! DÉTECTION VISION !!!");
+          alerte_ia = 1; 
+          beep(100, 3);
+          break; 
+      }
+      delay(100); // On ralentit un peu pour ne pas polluer le moniteur
+    }
+    Serial.println("--- FIN VEILLE IA ---");
+  // }
+
+  // 4. LECTURE DES CAPTEURS AVEC OFFSETS
+  sensors.requestTemperatures();
+  float ts1 = sensors.getTempCByIndex(0);
+  float ts2 = sensors.getTempCByIndex(1);
+  ts1 = (ts1 == DEVICE_DISCONNECTED_C ? 0 : ts1 + off_ts1);
+  ts2 = (ts2 == DEVICE_DISCONNECTED_C ? 0 : ts2 + off_ts2);
+  
+  float raw_ti = dht_int.readTemperature();
+  float raw_hi = dht_int.readHumidity();
+  float ti = (isnan(raw_ti) ? 0 : raw_ti) + off_ti;
+  uint16_t hi = (uint16_t)(isnan(raw_hi) ? 0 : raw_hi + off_hi);
+  
+  float raw_te = dht_ext.readTemperature();
+  float raw_he = dht_ext.readHumidity();
+  float te = (isnan(raw_te) ? 0 : raw_te) + off_te;
+  uint8_t he = (uint8_t)(isnan(raw_he) ? 0 : raw_he + off_he);
+
   scale.begin(HX711_DOUT, HX711_SCK);
-  scale.set_scale(MON_FACTEUR);
-  scale.set_offset(MA_TARE_FIXE);
+  delay(500);
+  scale.set_scale(-29126.0); scale.set_offset(-95280);
+  float p_kg = scale.get_units(5) + off_poids;
+  uint16_t poids_val = (uint16_t)(max(0.0f, p_kg) * 100);
 
-  if (!mma.begin()) Serial.println("MMA Fail");
-  else mma.setRange(MMA8451_RANGE_2_G);
+  // 5. ESSAIMAGE
+  if (dernier_poids > 0 && (dernier_poids - p_kg) > 0.8) alerte_ia = 2;
+  dernier_poids = p_kg;
 
-  // Configuration LoRa
-  sendAT("AT+ID=DevEui,\"" + String(devEui) + "\"");
-  sendAT("AT+ID=AppEui,\"" + String(appEui) + "\"");
-  sendAT("AT+KEY=APPKEY,\"" + String(appKey) + "\"");
-  sendAT("AT+MODE=LWOTAA");
-  sendAT("AT+JOIN"); 
-  delay(15000); 
-}
-
-void loop() {
-  updateSignalQuality();
-
-  // 1. Batterie
+  // 6. BATTERIE / MMA
   int raw_bat = analogRead(PIN_BAT);
   float v_bat = (raw_bat * 3.3 / 4095.0) * 2.0; 
   uint8_t bat = (uint8_t)constrain(map(v_bat * 100, 320, 415, 0, 100), 0, 100);
-
-  // 2. Accéléromètre & IA
-  sensors_event_t event; 
-  mma.getEvent(&event);
+  
+  mma.begin(); 
+  delay(100);
   uint8_t orient = mma.getOrientation();
-  int8_t accel_z = (int8_t)event.acceleration.z;
-  uint8_t alerte_ia = digitalRead(IA_XIAO_SIGNAL);
 
-  // 3. Poids
-  float p_kg = scale.get_units(5);
-  if (p_kg < 0) p_kg = 0; 
-  uint16_t poids_val = (uint16_t)(p_kg * 100); 
+  // 7. ENVOI LORA
+  Serial.println("AT+JOIN"); 
+  delay(12000); 
+  updateSignalQuality();
 
-  // 4. Températures & Environnement
-  sensors.requestTemperatures();
-  int16_t ts1 = (int16_t)(sensors.getTempCByIndex(0) * 100);
-  int16_t ts2 = (int16_t)(sensors.getTempCByIndex(1) * 100);
-  int16_t ti = (int16_t)(dht_int.readTemperature() * 10);
-  uint16_t hi = (uint16_t)(dht_int.readHumidity() * 10);
-  int16_t te = (int16_t)(dht_ext.readTemperature() * 10);
-  uint8_t he = (uint8_t)dht_ext.readHumidity();
-  uint16_t lux = readSEN0390();
+  char payload[64];
+  // Note le "02" fixe dans ton protocole
+  sprintf(payload, "%02X%02X%02X02%04X%04X%04X%04X%04X%04X%02X%04X%02X%02X",
+          bat, alerte_ia, (uint8_t)(orient > 0 ? orient - 1 : 0),
+          poids_val, (int16_t)(ts1*100), (int16_t)(ts2*100), (int16_t)(ti*10),
+          (uint16_t)(hi*10), (int16_t)(te*10), (uint8_t)he, (uint16_t)raw_lux_check, (uint8_t)real_rssi, (uint8_t)real_snr);
 
-  // 5. Construction Payload (Sécurisée à 100 chars pour éviter le crash)
-  char payload[100]; 
-  sprintf(payload, "%02X%02X%02X%02X%04X%04X%04X%04X%04X%04X%02X%04X%02X%02X",
-          bat, alerte_ia, orient, (uint8_t)accel_z, 
-          poids_val, (uint16_t)ts1, (uint16_t)ts2, (uint16_t)ti, hi, (uint16_t)te, he, lux, 
-          (uint8_t)real_rssi, (uint8_t)real_snr);
+  Serial.print("AT+MSGHEX=\""); Serial.print(payload); Serial.print("\"\r\n");
 
-  // 6. Envoi
-  Serial.print("AT+MSGHEX=\"");
-  Serial.print(payload);
-  Serial.print("\"\r\n");
+  // 8. LOGIQUE DOWNLINK
+  delay(6000); 
+  if (Serial.available()) {
+      String rx = Serial.readString();
+      rx.trim();
+      int dataIndex = rx.indexOf("DATA");
+      if (dataIndex != -1) {
+          int hexStart = rx.indexOf(' ', dataIndex) + 1;
+          String hexCmd = rx.substring(hexStart, hexStart + 4);
+          hexCmd.trim();
+          
+          if (hexCmd.length() >= 4) {
+              uint8_t cmd = strtol(hexCmd.substring(0, 2).c_str(), NULL, 16);
+              int8_t val  = (int8_t)strtol(hexCmd.substring(2, 4).c_str(), NULL, 16);
 
-  delay(20000); // 20 secondes entre chaque envoi
+              switch (cmd) {
+                  case 0x01: minutes_entre_envois = (val < 2 ? 2 : val); break;
+                  case 0x02: off_poids = (float)val / 10.0; break;
+                  case 0x03: off_ti    = (float)val / 10.0; break;
+                  case 0x04: off_hi    = (float)val;        break;
+                  case 0x05: off_te    = (float)val / 10.0; break;
+                  case 0x06: off_he    = (float)val;        break;
+                  case 0x07: off_ts1   = (float)val / 10.0; break;
+                  case 0x08: off_ts2   = (float)val / 10.0; break;
+              }
+              beep(100, 3);
+          }
+      }
+  }
+
+  digitalWrite(PIN_XIAO_EN, LOW);
+  digitalWrite(PIN_NANO_EN, LOW);
+  esp_sleep_enable_timer_wakeup(minutes_entre_envois * 60 * uS_TO_S_FACTOR);
+  esp_deep_sleep_start();
 }
 
-uint16_t readSEN0390() {
-  uint16_t level = 0;
-  Wire.beginTransmission(0x23);
-  Wire.write(0x10); 
-  if (Wire.endTransmission() != 0) return 0;
-  delay(180);
-  Wire.requestFrom(0x23, 2);
-  if (Wire.available() == 2) level = Wire.read() << 8 | Wire.read();
-  return (uint16_t)(level / 1.2);
-}
+void loop() {}
