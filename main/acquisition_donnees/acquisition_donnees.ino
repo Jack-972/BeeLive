@@ -40,9 +40,9 @@ RTC_DATA_ATTR float off_poids = 0.0;
 RTC_DATA_ATTR float off_ti    = 0.0;
 RTC_DATA_ATTR float off_hi    = 0.0;
 RTC_DATA_ATTR float off_te    = 0.0;
-RTC_DATA_ATTR float off_he    = -15.0; // Ton offset humidité
+RTC_DATA_ATTR float off_he    = -11.0; // Ton offset humidité
 RTC_DATA_ATTR float off_ts1   = 0.0;
-RTC_DATA_ATTR float off_ts2   = 0.0;
+RTC_DATA_ATTR float off_ts2   = 1.0;
 
 uint8_t alerte_ia = 0; 
 int8_t real_rssi = -100; 
@@ -104,7 +104,7 @@ void setup() {
     Serial.println("--- DÉBUT VEILLE IA ---");
     
     unsigned long startIA = millis();
-    while (millis() - startIA < 30000) { 
+    while (millis() - startIA < 12000) { 
       // Debug visuel du signal XIAO
       int signalVision = digitalRead(IA_SIGNAL_PIN);
       Serial.print("Signal PIN 14 : "); Serial.println(signalVision);
@@ -115,12 +115,16 @@ void setup() {
         if (index == 4) alerte_ia = 4; 
         else if (index == 2) alerte_ia = 3; 
         else if (index == 0) alerte_ia = 1;
-        if (alerte_ia > 0) break;
+        if (alerte_ia > 0){
+          beep(100, 3);
+          break;
+        }
       }
 
       if (signalVision == HIGH) { 
           Serial.println("!!! DÉTECTION VISION !!!");
           alerte_ia = 1; 
+          beep(100, 3);
           break; 
       }
       delay(100); // On ralentit un peu pour ne pas polluer le moniteur
@@ -146,6 +150,8 @@ void setup() {
   uint8_t he = (uint8_t)(isnan(raw_he) ? 0 : raw_he + off_he);
 
   scale.begin(HX711_DOUT, HX711_SCK);
+  delay(500);
+  scale.set_scale(-29126.0); scale.set_offset(-95280);
   float p_kg = scale.get_units(5) + off_poids;
   uint16_t poids_val = (uint16_t)(max(0.0f, p_kg) * 100);
 
@@ -177,7 +183,7 @@ void setup() {
   Serial.print("AT+MSGHEX=\""); Serial.print(payload); Serial.print("\"\r\n");
 
   // 8. LOGIQUE DOWNLINK
-  delay(7000); 
+  delay(6000); 
   if (Serial.available()) {
       String rx = Serial.readString();
       rx.trim();
