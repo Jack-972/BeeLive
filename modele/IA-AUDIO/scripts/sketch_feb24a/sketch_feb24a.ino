@@ -74,7 +74,7 @@ void setup()
     Serial.begin(115200);
     Serial1.begin(115200); // Pour communiquer avec l'ESP32
     // comment out the below line to cancel the wait for USB connection (needed for native USB)
-    while (!Serial);
+    delay(1000);
     Serial.println("Edge Impulse Inferencing Demo");
 
     Serial.println("=== INITIALISATION NANO 33 BLE AI ===");
@@ -148,7 +148,8 @@ void loop()
             
             // --- MODIFICATION ICI ---
             // On envoie seulement le numéro de la classe (index)
-            Serial1.println(index_max); 
+            //Serial1.println(index_max); 
+            Serial1.write((uint8_t)index_max); 
             
             // Debug sur le PC pour savoir quel chiffre correspond à quoi
             Serial.print(">>> ENVOI INDEX : ");
