@@ -40,7 +40,7 @@ RTC_DATA_ATTR float off_poids = 0.0;
 RTC_DATA_ATTR float off_ti    = 0.0;
 RTC_DATA_ATTR float off_hi    = 0.0;
 RTC_DATA_ATTR float off_te    = 0.0;
-RTC_DATA_ATTR float off_he    = -11.0; // Ton offset humidité
+RTC_DATA_ATTR float off_he    = -5.0; // Ton offset humidité
 RTC_DATA_ATTR float off_ts1   = 0.0;
 RTC_DATA_ATTR float off_ts2   = 1.0;
 
@@ -71,6 +71,7 @@ void setup() {
   pinMode(PIN_XIAO_EN, OUTPUT);
   pinMode(PIN_NANO_EN, OUTPUT);
   pinMode(IA_SIGNAL_PIN, INPUT_PULLDOWN);
+  analogSetAttenuation(ADC_11db);
 
   if (bootCount == 0) beep(200, 1);
   bootCount++;
@@ -207,10 +208,14 @@ void setup() {
                   case 0x07: off_ts1   = (float)val / 10.0; break;
                   case 0x08: off_ts2   = (float)val / 10.0; break;
               }
-              beep(100, 3);
+              beep(100, 2);
           }
       }
   }
+
+  Serial.println("AT+LOWPOWER"); 
+  Serial.flush(); // Force l'ESP32 à attendre que tout le texte soit physiquement envoyé sur le câble
+  delay(100);
 
   digitalWrite(PIN_XIAO_EN, LOW);
   digitalWrite(PIN_NANO_EN, LOW);
