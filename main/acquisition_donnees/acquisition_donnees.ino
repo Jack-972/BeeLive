@@ -9,7 +9,7 @@
 // --- CONFIGURATION PINS ---
 #define PIN_BUZZER 13
 #define PIN_XIAO_EN 4      
-#define PIN_NANO_EN 0      
+#define PIN_NANO_EN 25      
 #define DHT_INT_PIN 26
 #define PIN_BAT 35 
 #define DHT_EXT_PIN 5
@@ -40,13 +40,14 @@ RTC_DATA_ATTR float off_poids = 0.0;
 RTC_DATA_ATTR float off_ti    = 0.0;
 RTC_DATA_ATTR float off_hi    = 0.0;
 RTC_DATA_ATTR float off_te    = 0.0;
-RTC_DATA_ATTR float off_he    = -5.0; // Ton offset humidité
+RTC_DATA_ATTR float off_he    = 0.0;
 RTC_DATA_ATTR float off_ts1   = 0.0;
-RTC_DATA_ATTR float off_ts2   = 1.0;
+RTC_DATA_ATTR float off_ts2   = 0.0;
+
+RTC_DATA_ATTR int8_t real_rssi = -100; 
+RTC_DATA_ATTR int8_t real_snr = 5;
 
 uint8_t alerte_ia = 0; 
-int8_t real_rssi = -100; 
-int8_t real_snr = 5;
 
 void beep(int duree, int repetitions) {
   for(int i=0; i<repetitions; i++) {
@@ -57,11 +58,15 @@ void beep(int duree, int repetitions) {
 
 void updateSignalQuality() {
   Serial.println("AT+CSQ"); 
-  delay(1000); 
+  delay(500);
   if (Serial.available()) {
-    String res = Serial.readString();
-    int rPos = res.indexOf("RSSI ");
-    if (rPos != -1) real_rssi = res.substring(rPos + 5, res.indexOf(",", rPos)).toInt();
+    String response = Serial.readString();
+    int rssiPos = response.indexOf("RSSI ");
+    int snrPos = response.indexOf("SNR ");
+    if (rssiPos != -1 && snrPos != -1) {
+      real_rssi = response.substring(rssiPos + 5, response.indexOf(",", rssiPos)).toInt();
+      real_snr = response.substring(snrPos + 4).toInt();
+    }
   }
 }
 
@@ -108,7 +113,6 @@ void setup() {
     while (millis() - startIA < 12000) { 
       // Debug visuel du signal XIAO
       int signalVision = digitalRead(IA_SIGNAL_PIN);
-      Serial.print("Signal PIN 14 : "); Serial.println(signalVision);
 
       if (Serial2.available() > 0) {
         uint8_t index = Serial2.read();
@@ -160,61 +164,82 @@ void setup() {
   if (dernier_poids > 0 && (dernier_poids - p_kg) > 0.8) alerte_ia = 2;
   dernier_poids = p_kg;
 
-  // 6. BATTERIE / MMA
+  // 6. BATTERIE (Formule précise uPesy)
   int raw_bat = analogRead(PIN_BAT);
-  float v_bat = (raw_bat * 3.3 / 4095.0) * 2.0; 
-  uint8_t bat = (uint8_t)constrain(map(v_bat * 100, 320, 415, 0, 100), 0, 100);
+  float v_bat = 1.435 * ((float)raw_bat / 4095.0) * 3.3; 
+  uint8_t bat = (uint8_t)constrain(map(v_bat * 100, 320, 420, 0, 100), 0, 100);
   
   mma.begin(); 
   delay(100);
   uint8_t orient = mma.getOrientation();
 
-  // 7. ENVOI LORA
-  Serial.println("AT+JOIN"); 
-  delay(12000); 
-  updateSignalQuality();
+  // --- 7. ENVOI LORA ---
+  if (bootCount == 1) {
+    Serial.println("AT+JOIN"); 
+    delay(12000); 
+  }
+
+  // On purge le buffer pour être propre
+  while(Serial.available()) Serial.read();
 
   char payload[64];
-  // Note le "02" fixe dans ton protocole
   sprintf(payload, "%02X%02X%02X02%04X%04X%04X%04X%04X%04X%02X%04X%02X%02X",
           bat, alerte_ia, (uint8_t)(orient > 0 ? orient - 1 : 0),
           poids_val, (int16_t)(ts1*100), (int16_t)(ts2*100), (int16_t)(ti*10),
-          (uint16_t)(hi*10), (int16_t)(te*10), (uint8_t)he, (uint16_t)raw_lux_check, (uint8_t)real_rssi, (uint8_t)real_snr);
+          (uint16_t)(hi*10), (int16_t)(te*10), (uint8_t)he, (uint16_t)raw_lux_check, 
+          (uint8_t)real_rssi, (uint8_t)real_snr);
 
   Serial.print("AT+MSGHEX=\""); Serial.print(payload); Serial.print("\"\r\n");
 
-  // 8. LOGIQUE DOWNLINK
-  delay(6000); 
-  if (Serial.available()) {
-      String rx = Serial.readString();
-      rx.trim();
-      int dataIndex = rx.indexOf("DATA");
-      if (dataIndex != -1) {
-          int hexStart = rx.indexOf(' ', dataIndex) + 1;
-          String hexCmd = rx.substring(hexStart, hexStart + 4);
-          hexCmd.trim();
-          
-          if (hexCmd.length() >= 4) {
-              uint8_t cmd = strtol(hexCmd.substring(0, 2).c_str(), NULL, 16);
-              int8_t val  = (int8_t)strtol(hexCmd.substring(2, 4).c_str(), NULL, 16);
+  // --- 8. LOGIQUE DOWNLINK & RSSI (LA MAGIE OPÈRE ICI) ---
+  unsigned long startWait = millis();
+  Serial.println(">>> ECOUTE DU RESEAU (15s)...");
 
-              switch (cmd) {
-                  case 0x01: minutes_entre_envois = (val < 2 ? 2 : val); break;
-                  case 0x02: off_poids = (float)val / 10.0; break;
-                  case 0x03: off_ti    = (float)val / 10.0; break;
-                  case 0x04: off_hi    = (float)val;        break;
-                  case 0x05: off_te    = (float)val / 10.0; break;
-                  case 0x06: off_he    = (float)val;        break;
-                  case 0x07: off_ts1   = (float)val / 10.0; break;
-                  case 0x08: off_ts2   = (float)val / 10.0; break;
-              }
-              beep(100, 2);
-          }
+  while (millis() - startWait < 15000) { 
+    if (Serial.available()) {
+      String rx = Serial.readStringUntil('\n');
+      rx.trim();
+      
+      // On affiche pour que tu voies le miracle sur ton écran
+      if (rx.length() > 0) Serial.println("LORA-E5 : " + rx); 
+
+      // 1. CAPTURE DU RSSI AU VOL (Ex: +MSGHEX: RXWIN1, RSSI -99, SNR 5)
+      if (rx.indexOf("RSSI") != -1 && rx.indexOf("SNR") != -1) {
+          int rssiIdx = rx.indexOf("RSSI") + 4; // On se place après "RSSI"
+          int commaIdx = rx.indexOf(",", rssiIdx);
+          if (commaIdx != -1) real_rssi = rx.substring(rssiIdx, commaIdx).toInt();
+
+          int snrIdx = rx.indexOf("SNR") + 3; // On se place après "SNR"
+          real_snr = rx.substring(snrIdx).toInt();
       }
+
+      // 2. CAPTURE DU DOWNLINK (Ex: +MSGHEX: PORT: 1; RX: "0564")
+      if (rx.indexOf("RX: \"") != -1) {
+          int dataIndex = rx.indexOf("RX: \"");
+          String hexCmd = rx.substring(dataIndex + 5, dataIndex + 9);
+          
+          uint8_t cmd = strtol(hexCmd.substring(0, 2).c_str(), NULL, 16);
+          int8_t val  = (int8_t)strtol(hexCmd.substring(2, 4).c_str(), NULL, 16);
+
+          // Application de la commande
+          if (cmd == 0x01) minutes_entre_envois = (val < 2 ? 2 : val);
+          else if (cmd == 0x02) off_poids = (float)val / 10.0;
+          else if (cmd == 0x03) off_ti    = (float)val / 10.0;
+          else if (cmd == 0x04) off_hi    = (float)val;
+          else if (cmd == 0x05) off_te    = (float)val / 10.0;
+          else if (cmd == 0x06) off_he    = (float)val;
+          else if (cmd == 0x07) off_ts1   = (float)val / 10.0;
+          else if (cmd == 0x08) off_ts2   = (float)val / 10.0;
+
+          beep(100, 5); // 5 BIPS : VICTOIRE !!!
+      }
+    }
   }
 
+  // --- 9. SOMMEIL ---
+  updateSignalQuality();
   Serial.println("AT+LOWPOWER"); 
-  Serial.flush(); // Force l'ESP32 à attendre que tout le texte soit physiquement envoyé sur le câble
+  Serial.flush();
   delay(100);
 
   digitalWrite(PIN_XIAO_EN, LOW);
