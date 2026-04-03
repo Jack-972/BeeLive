@@ -6,6 +6,8 @@
 #include <Adafruit_MMA8451.h>
 #include <Adafruit_Sensor.h>
 #include "driver/rtc_io.h"
+#include "driver/gpio.h"
+#include "driver/adc.h"
 
 // --- CONFIGURATION PINS ---
 #define PIN_BUZZER 13
@@ -21,7 +23,7 @@
 
 // --- CONFIGURATION SYSTÈME ---
 #define uS_TO_S_FACTOR 1000000ULL  
-#define SEUIL_TEMP_EXT 12.0
+#define SEUIL_TEMP_EXT 5.0
 #define SEUIL_LUX_JOUR 50
 
 // --- INSTANCES ---
@@ -35,7 +37,8 @@ Adafruit_MMA8451 mma = Adafruit_MMA8451();
 // --- VARIABLES RTC ---
 RTC_DATA_ATTR int bootCount = 0;
 RTC_DATA_ATTR float dernier_poids = 0; 
-RTC_DATA_ATTR int minutes_entre_envois = 1; 
+RTC_DATA_ATTR int minutes_entre_envois = 10; 
+RTC_DATA_ATTR int envoi_automatique = 0;
 
 RTC_DATA_ATTR float off_poids = 0.0;
 RTC_DATA_ATTR float off_ti    = 0.0;
@@ -57,11 +60,26 @@ void beep(int duree, int repetitions) {
   }
 }
 
+void envoi_auto(uint8_t bat){
+  if (bat < 20){
+    minutes_entre_envois = 60;
+  }
+  else if (bat < 40){
+    minutes_entre_envois = 40;
+  }
+  else if (bat < 60){
+    minutes_entre_envois = 20;
+  }
+  else{
+    minutes_entre_envois = 10;
+  }
+}
+
 
 void setup() {
   // --- Déverrouillage pins IA ---
-  rtc_gpio_hold_dis(GPIO_NUM_4);
-  rtc_gpio_hold_dis(GPIO_NUM_25);
+  gpio_hold_dis(GPIO_NUM_4);
+  gpio_hold_dis(GPIO_NUM_25);
 
   // 1. INITIALISATION MATÉRIELLE
   pinMode(PIN_BUZZER, OUTPUT);
@@ -72,11 +90,8 @@ void setup() {
   scale.begin(HX711_DOUT, HX711_SCK);
   scale.power_up();
 
-  if (bootCount == 0) beep(200, 1);
+  if (bootCount == 0) beep(1000, 1);
   bootCount++;
-
-  digitalWrite(PIN_XIAO_EN, HIGH);
-  digitalWrite(PIN_NANO_EN, HIGH);
   
   Serial.begin(9600);    
   Serial2.begin(115200); 
@@ -97,11 +112,27 @@ void setup() {
   Wire.requestFrom(0x23, 2);
   if(Wire.available()==2) raw_lux_check = (Wire.read() << 8 | Wire.read()) / 1.2;
 
+  // 6. BATTERIE (Formule précise uPesy)
+  int raw_bat = analogRead(PIN_BAT);
+  float v_bat = 1.435 * ((float)raw_bat / 4095.0) * 3.3; 
+  uint8_t bat = (uint8_t)constrain(map(v_bat * 100, 320, 420, 0, 100), 0, 100);
+
+  if (bat < 20){
+    envoi_automatique = 1;
+  }
+
+  if (envoi_automatique == 1){
+    envoi_auto(bat);
+  }
+
   // 3. LOGIQUE IA (AUDIO PRIORITAIRE)
   float temp_ia = isnan(te_init) ? 20.0 : te_init;
   // A activer pour le deep sleep
-  if (temp_ia > SEUIL_TEMP_EXT && raw_lux_check > SEUIL_LUX_JOUR) {
-    
+  if (temp_ia > SEUIL_TEMP_EXT && raw_lux_check > SEUIL_LUX_JOUR && bat > 50) {
+
+    digitalWrite(PIN_XIAO_EN, HIGH);
+    digitalWrite(PIN_NANO_EN, HIGH);
+      
     unsigned long startIA = millis();
     while (millis() - startIA < 12000) { 
       // Debug visuel du signal XIAO
@@ -126,10 +157,17 @@ void setup() {
       delay(100); // On ralentit un peu pour ne pas polluer le moniteur
     }
   }
+
+    // --- EXTINCTION IA ET COUPURE VAMPIRE ---
+  Serial2.end();
+  pinMode(16, OUTPUT); digitalWrite(16, LOW);
+  pinMode(17, OUTPUT); digitalWrite(17, LOW);
+
   digitalWrite(PIN_XIAO_EN, LOW);
   digitalWrite(PIN_NANO_EN, LOW);
-  rtc_gpio_hold_en(GPIO_NUM_4);
-  rtc_gpio_hold_en(GPIO_NUM_25);
+  gpio_hold_en(GPIO_NUM_4);
+  gpio_hold_en(GPIO_NUM_25);
+  gpio_deep_sleep_hold_en();
 
   // 4. LECTURE DES CAPTEURS AVEC OFFSETS
   sensors.requestTemperatures();
@@ -157,17 +195,12 @@ void setup() {
   if (dernier_poids > 0 && (dernier_poids - p_kg) > 0.8) alerte_ia = 2;
   dernier_poids = p_kg;
 
-  // 6. BATTERIE (Formule précise uPesy)
-  int raw_bat = analogRead(PIN_BAT);
-  float v_bat = 1.435 * ((float)raw_bat / 4095.0) * 3.3; 
-  uint8_t bat = (uint8_t)constrain(map(v_bat * 100, 320, 420, 0, 100), 0, 100);
   
   uint8_t orient = 0;
   if (mma.begin()) {
     delay(100);
     orient = mma.getOrientation();
   }
-
 
   // --- 7. ENVOI LORA ---
   if (bootCount == 1) {
@@ -189,7 +222,6 @@ void setup() {
 
   // --- 8. LOGIQUE DOWNLINK & RSSI (LA MAGIE OPÈRE ICI) ---
   unsigned long startWait = millis();
-  Serial.println(">>> ECOUTE DU RESEAU (15s)...");
 
   while (millis() - startWait < 15000) { 
     if (Serial.available()) {
@@ -224,7 +256,18 @@ void setup() {
             int8_t val = strtol(hexCmd.substring(2,4).c_str(),NULL,16);
 
             // Application de la commande
-            if (cmd == 0x01) minutes_entre_envois = (val < 2 ? 2 : val);
+            if (cmd == 0x01){
+              if (val < 1){
+                envoi_automatique = 0;
+              }
+              else if (val == 1){
+                envoi_automatique = 1;
+              }
+              else{
+                envoi_automatique = 0;
+                minutes_entre_envois = val;
+              }
+            }
             else if (cmd == 0x02) off_poids = (float)val / 10.0;
             else if (cmd == 0x03) off_ti    = (float)val / 10.0;
             else if (cmd == 0x04) off_hi    = (float)val;
@@ -241,12 +284,23 @@ void setup() {
   }
 
   // --- 9. SOMMEIL ---
+
   scale.power_down();
-  Serial.println("AT+LOWPOWER"); 
+
+  Serial.println("AT+LOWPOWER");
   Serial.flush();
   delay(100);
 
+  // Désactivation I2C
+  Wire.end();
+
+  // Désactivation Serial
+  Serial.end();
+
+  // Sleep timer
   esp_sleep_enable_timer_wakeup(minutes_entre_envois * 60 * uS_TO_S_FACTOR);
+
+  // Deep sleep
   esp_deep_sleep_start();
 }
 
