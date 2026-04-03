@@ -5,6 +5,7 @@
 #include <DallasTemperature.h>
 #include <Adafruit_MMA8451.h>
 #include <Adafruit_Sensor.h>
+#include "driver/rtc_io.h"
 
 // --- CONFIGURATION PINS ---
 #define PIN_BUZZER 13
@@ -56,27 +57,20 @@ void beep(int duree, int repetitions) {
   }
 }
 
-void updateSignalQuality() {
-  Serial.println("AT+CSQ"); 
-  delay(500);
-  if (Serial.available()) {
-    String response = Serial.readString();
-    int rssiPos = response.indexOf("RSSI ");
-    int snrPos = response.indexOf("SNR ");
-    if (rssiPos != -1 && snrPos != -1) {
-      real_rssi = response.substring(rssiPos + 5, response.indexOf(",", rssiPos)).toInt();
-      real_snr = response.substring(snrPos + 4).toInt();
-    }
-  }
-}
 
 void setup() {
+  // --- Déverrouillage pins IA ---
+  rtc_gpio_hold_dis(GPIO_NUM_4);
+  rtc_gpio_hold_dis(GPIO_NUM_25);
+
   // 1. INITIALISATION MATÉRIELLE
   pinMode(PIN_BUZZER, OUTPUT);
   pinMode(PIN_XIAO_EN, OUTPUT);
   pinMode(PIN_NANO_EN, OUTPUT);
   pinMode(IA_SIGNAL_PIN, INPUT_PULLDOWN);
   analogSetAttenuation(ADC_11db);
+  scale.begin(HX711_DOUT, HX711_SCK);
+  scale.power_up();
 
   if (bootCount == 0) beep(200, 1);
   bootCount++;
@@ -106,8 +100,7 @@ void setup() {
   // 3. LOGIQUE IA (AUDIO PRIORITAIRE)
   float temp_ia = isnan(te_init) ? 20.0 : te_init;
   // A activer pour le deep sleep
-  // if (temp_ia > SEUIL_TEMP_EXT && raw_lux_check > SEUIL_LUX_JOUR) {
-    Serial.println("--- DÉBUT VEILLE IA ---");
+  if (temp_ia > SEUIL_TEMP_EXT && raw_lux_check > SEUIL_LUX_JOUR) {
     
     unsigned long startIA = millis();
     while (millis() - startIA < 12000) { 
@@ -116,7 +109,6 @@ void setup() {
 
       if (Serial2.available() > 0) {
         uint8_t index = Serial2.read();
-        Serial.print("Audio reçu index : "); Serial.println(index);
         if (index == 4) alerte_ia = 4; 
         else if (index == 2) alerte_ia = 3; 
         else if (index == 0) alerte_ia = 1;
@@ -127,15 +119,17 @@ void setup() {
       }
 
       if (signalVision == HIGH) { 
-          Serial.println("!!! DÉTECTION VISION !!!");
           alerte_ia = 1; 
           beep(100, 3);
           break; 
       }
       delay(100); // On ralentit un peu pour ne pas polluer le moniteur
     }
-    Serial.println("--- FIN VEILLE IA ---");
-  // }
+  }
+  digitalWrite(PIN_XIAO_EN, LOW);
+  digitalWrite(PIN_NANO_EN, LOW);
+  rtc_gpio_hold_en(GPIO_NUM_4);
+  rtc_gpio_hold_en(GPIO_NUM_25);
 
   // 4. LECTURE DES CAPTEURS AVEC OFFSETS
   sensors.requestTemperatures();
@@ -154,7 +148,6 @@ void setup() {
   float te = (isnan(raw_te) ? 0 : raw_te) + off_te;
   uint8_t he = (uint8_t)(isnan(raw_he) ? 0 : raw_he + off_he);
 
-  scale.begin(HX711_DOUT, HX711_SCK);
   delay(500);
   scale.set_scale(-29126.0); scale.set_offset(-95280);
   float p_kg = scale.get_units(5) + off_poids;
@@ -169,9 +162,12 @@ void setup() {
   float v_bat = 1.435 * ((float)raw_bat / 4095.0) * 3.3; 
   uint8_t bat = (uint8_t)constrain(map(v_bat * 100, 320, 420, 0, 100), 0, 100);
   
-  mma.begin(); 
-  delay(100);
-  uint8_t orient = mma.getOrientation();
+  uint8_t orient = 0;
+  if (mma.begin()) {
+    delay(100);
+    orient = mma.getOrientation();
+  }
+
 
   // --- 7. ENVOI LORA ---
   if (bootCount == 1) {
@@ -183,7 +179,7 @@ void setup() {
   while(Serial.available()) Serial.read();
 
   char payload[64];
-  sprintf(payload, "%02X%02X%02X02%04X%04X%04X%04X%04X%04X%02X%04X%02X%02X",
+  sprintf(payload, "%02X%02X%02X%04X%04X%04X%04X%04X%04X%02X%04X%02X%02X",
           bat, alerte_ia, (uint8_t)(orient > 0 ? orient - 1 : 0),
           poids_val, (int16_t)(ts1*100), (int16_t)(ts2*100), (int16_t)(ti*10),
           (uint16_t)(hi*10), (int16_t)(te*10), (uint8_t)he, (uint16_t)raw_lux_check, 
@@ -205,45 +201,51 @@ void setup() {
 
       // 1. CAPTURE DU RSSI AU VOL (Ex: +MSGHEX: RXWIN1, RSSI -99, SNR 5)
       if (rx.indexOf("RSSI") != -1 && rx.indexOf("SNR") != -1) {
-          int rssiIdx = rx.indexOf("RSSI") + 4; // On se place après "RSSI"
-          int commaIdx = rx.indexOf(",", rssiIdx);
-          if (commaIdx != -1) real_rssi = rx.substring(rssiIdx, commaIdx).toInt();
+        int rssiIdx = rx.indexOf("RSSI") + 5; // On se place après "RSSI"
+        int commaIdx = rx.indexOf(",", rssiIdx);
+        if (commaIdx != -1) real_rssi = rx.substring(rssiIdx, commaIdx).toInt();
 
-          int snrIdx = rx.indexOf("SNR") + 3; // On se place après "SNR"
-          real_snr = rx.substring(snrIdx).toInt();
+        int snrIdx = rx.indexOf("SNR") + 3; // On se place après "SNR"
+        real_snr = rx.substring(snrIdx).toInt();
       }
 
       // 2. CAPTURE DU DOWNLINK (Ex: +MSGHEX: PORT: 1; RX: "0564")
       if (rx.indexOf("RX: \"") != -1) {
-          int dataIndex = rx.indexOf("RX: \"");
-          String hexCmd = rx.substring(dataIndex + 5, dataIndex + 9);
-          
-          uint8_t cmd = strtol(hexCmd.substring(0, 2).c_str(), NULL, 16);
-          int8_t val  = (int8_t)strtol(hexCmd.substring(2, 4).c_str(), NULL, 16);
+        int start = rx.indexOf("\"");
+        int end = rx.indexOf("\"", start + 1);
 
-          // Application de la commande
-          if (cmd == 0x01) minutes_entre_envois = (val < 2 ? 2 : val);
-          else if (cmd == 0x02) off_poids = (float)val / 10.0;
-          else if (cmd == 0x03) off_ti    = (float)val / 10.0;
-          else if (cmd == 0x04) off_hi    = (float)val;
-          else if (cmd == 0x05) off_te    = (float)val / 10.0;
-          else if (cmd == 0x06) off_he    = (float)val;
-          else if (cmd == 0x07) off_ts1   = (float)val / 10.0;
-          else if (cmd == 0x08) off_ts2   = (float)val / 10.0;
+        if (start != -1 && end != -1) {
 
-          beep(100, 5); // 5 BIPS : VICTOIRE !!!
+          String hexCmd = rx.substring(start + 1, end);
+
+          if (hexCmd.length() >= 4) {
+
+            uint8_t cmd = strtol(hexCmd.substring(0,2).c_str(),NULL,16);
+            int8_t val = strtol(hexCmd.substring(2,4).c_str(),NULL,16);
+
+            // Application de la commande
+            if (cmd == 0x01) minutes_entre_envois = (val < 2 ? 2 : val);
+            else if (cmd == 0x02) off_poids = (float)val / 10.0;
+            else if (cmd == 0x03) off_ti    = (float)val / 10.0;
+            else if (cmd == 0x04) off_hi    = (float)val;
+            else if (cmd == 0x05) off_te    = (float)val / 10.0;
+            else if (cmd == 0x06) off_he    = (float)val;
+            else if (cmd == 0x07) off_ts1   = (float)val / 10.0;
+            else if (cmd == 0x08) off_ts2   = (float)val / 10.0;
+
+            beep(100, 5);
+          }
+        }
       }
     }
   }
 
   // --- 9. SOMMEIL ---
-  updateSignalQuality();
+  scale.power_down();
   Serial.println("AT+LOWPOWER"); 
   Serial.flush();
   delay(100);
 
-  digitalWrite(PIN_XIAO_EN, LOW);
-  digitalWrite(PIN_NANO_EN, LOW);
   esp_sleep_enable_timer_wakeup(minutes_entre_envois * 60 * uS_TO_S_FACTOR);
   esp_deep_sleep_start();
 }
