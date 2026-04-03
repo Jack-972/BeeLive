@@ -2,43 +2,42 @@ function decodeUplink(input) {
   var bytes = input.bytes;
   var data = {};
 
-  if (bytes.length < 21) {
+  if (bytes.length < 20) {
     return { errors: ["Payload trop court !"] };
   }
 
-  // --- IDENTIFIANT UNIQUE BEEP ---
+// --- IDENTIFIANT UNIQUE BEEP ---
   data.key = "mwjsl0uzqqsbjwyj"; 
 
   // --- ALIMENTATION (Clé 'bv') ---
   data.bv = (bytes[0] * 0.012) + 3.0;
 
-  // --- POIDS (Clé 'weight_kg') ---
-  data.weight_kg = (bytes[4] << 8 | bytes[5]) / 100.0;
-
-  // --- TEMPÉRATURES (Selon value_key de l'image) ---
-  data.t_1 = (readInt16(bytes, 6)) / 100.0; // sonde 1 
-  data.t_2 = (readInt16(bytes, 8)) / 100.0; // sonde 2 
-  data.t = (readInt16(bytes, 10)) / 10.0;  // Intérieure 
-  data.t_0 = (readInt16(bytes, 14)) / 10.0;    // Extérieure 
-
-  // --- HUMIDITÉ (Clé 'h') ---
-  data.t_3 = bytes[16]; // Humidité Extérieure 
-  data.h = (bytes[12] << 8 | bytes[13]) / 10.0; // Humidité Intérieure
-
-  // --- LUMINOSITÉ (Clé 'l') ---
-  data.l = (bytes[17] << 8 | bytes[18]); // Unité lux 
-
-  // --- QUALITÉ SIGNAL ---
-  data.rssi = (bytes[19] > 127) ? bytes[19] - 256 : bytes[19];
-  data.snr = (bytes[20] > 127) ? bytes[20] - 256 : bytes[20];
-
-  // --- DONNÉES DE SÉCURITÉ (Hors BEEP standard) ---
-  data.alerte_ia = bytes[1];
+  // --- IA ET ORIENTATION ---
+  data.t_4 = bytes[1]; // Alerte IA
   data.orientation_id = bytes[2];
-  data.accel_z = (bytes[3] > 127) ? bytes[3] - 256 : bytes[3];
   
   var orientations = ["Verticale", "Portrait Down", "Portrait Up Back", "Portrait Down Back", "Landscape Right", "Landscape Left", "Face vers le haut", "Face vers le bas"];
   data.etat_ruche = orientations[bytes[2]] || "Inconnu";
+
+  // --- POIDS ---
+  data.weight_kg = (bytes[3] << 8 | bytes[4]) / 100.0;
+
+  // --- TEMPÉRATURES ---
+  data.t_1 = (readInt16(bytes, 5)) / 100.0;  // sonde 1 
+  data.t_2 = (readInt16(bytes, 7)) / 100.0;  // sonde 2 
+  data.t = (readInt16(bytes, 9)) / 10.0;     // Intérieure 
+  data.t_0 = (readInt16(bytes, 13)) / 10.0;  // Extérieure 
+
+  // --- HUMIDITÉ ---
+  data.h = (bytes[11] << 8 | bytes[12]) / 10.0; // Intérieure
+  data.t_3 = bytes[15];                         // Extérieure 
+
+  // --- LUMINOSITÉ ---
+  data.l = (bytes[16] << 8 | bytes[17]); // Unité lux
+
+  // --- QUALITÉ SIGNAL ---
+  data.rssi = (bytes[18] > 127) ? bytes[18] - 256 : bytes[18];
+  data.snr = (bytes[19] > 127) ? bytes[19] - 256 : bytes[19];
 
   return {
     data: data,
