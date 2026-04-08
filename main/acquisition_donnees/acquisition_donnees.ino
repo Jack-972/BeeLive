@@ -82,6 +82,8 @@ void setup() {
   gpio_hold_dis(GPIO_NUM_25);
 
   // 1. INITIALISATION MATÉRIELLE
+  digitalWrite(PIN_XIAO_EN, LOW);
+  digitalWrite(PIN_NANO_EN, LOW);
   pinMode(PIN_BUZZER, OUTPUT);
   pinMode(PIN_XIAO_EN, OUTPUT);
   pinMode(PIN_NANO_EN, OUTPUT);
@@ -113,6 +115,8 @@ void setup() {
   if(Wire.available()==2) raw_lux_check = (Wire.read() << 8 | Wire.read()) / 1.2;
 
   // 6. BATTERIE (Formule précise uPesy)
+  pinMode(PIN_BAT, INPUT);
+  delay(50);
   int raw_bat = analogRead(PIN_BAT);
   float v_bat = 1.435 * ((float)raw_bat / 4095.0) * 3.3; 
   uint8_t bat = (uint8_t)constrain(map(v_bat * 100, 320, 420, 0, 100), 0, 100);
@@ -132,6 +136,7 @@ void setup() {
 
     digitalWrite(PIN_XIAO_EN, HIGH);
     digitalWrite(PIN_NANO_EN, HIGH);
+    delay(3000);
       
     unsigned long startIA = millis();
     while (millis() - startIA < 12000) { 
@@ -158,13 +163,23 @@ void setup() {
     }
   }
 
-    // --- EXTINCTION IA ET COUPURE VAMPIRE ---
+  // --- EXTINCTION ET ISOLATION TOTALE ---
+
+  // 1. Isolement UART (Audio Nano)
   Serial2.end();
   pinMode(16, OUTPUT); digitalWrite(16, LOW);
   pinMode(17, OUTPUT); digitalWrite(17, LOW);
 
+  // 2. Isolement GPIO (Vision XIAO)
+  pinMode(IA_SIGNAL_PIN, OUTPUT); 
+  digitalWrite(IA_SIGNAL_PIN, LOW);
+
+  // 3. Coupure physique des Pololu
   digitalWrite(PIN_XIAO_EN, LOW);
   digitalWrite(PIN_NANO_EN, LOW);
+  delay(10); 
+  
+  // Verrouillage matériel des Pololu à 0V
   gpio_hold_en(GPIO_NUM_4);
   gpio_hold_en(GPIO_NUM_25);
   gpio_deep_sleep_hold_en();
@@ -293,8 +308,9 @@ void setup() {
 
   // Désactivation I2C
   Wire.end();
+  pinMode(21, INPUT);
+  pinMode(22, INPUT);
 
-  // Désactivation Serial
   Serial.end();
 
   // Sleep timer
