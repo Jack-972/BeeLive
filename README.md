@@ -21,10 +21,7 @@ Le système repose sur une architecture décentralisée garantissant la sécurit
 ## 2. Configuration du Nœud ESP32
 
 ### 2.1 Identifiants LoRaWAN (OTAA)
-Identifiants persistants dans le modem LoRa-E5 :
-- **DevEUI :** `CDEADAEEACFADEEA`
-- **AppEUI :** `0000000000000000`
-- **AppKey :** `0FF6C98BEE426A6DD4C1CBE40804A4C3`
+Identifiants sont persistants dans le modem LoRa-E5
 
 ### 2.2 Installation
 1. Cloner le dépôt : `git clone https://github.com/Jack-972/BeeLive.git`
@@ -49,8 +46,8 @@ Utiliser le script `scripts/payloadFormatters.json` sur la console TTN.
 
 ### 4.2 Webhooks
 Configurer deux webhooks JSON :
-- **VPS BeeLive :** `http://31.97.154.149:8000/lora-uplink`
-- **API BEEP :** `https://beep-test.azurewebsites.net/api/yann`
+- **VPS BeeLive :** `http://[Lien_VPS]/lora-uplink`
+- **API BEEP :** `https://[Lien_BEEP]/api/yann`
 
 ### 4.3 Liaison BEEP.nl
 Dans le décodeur TTN, insérer votre Hardware ID : `data.key = "VOTRE_ID_BEEP";`
