@@ -21,7 +21,7 @@ Le système repose sur une architecture décentralisée garantissant la sécurit
 ## 2. Configuration du Nœud ESP32
 
 ### 2.1 Identifiants LoRaWAN (OTAA)
-Identifiants sont persistants dans le modem LoRa-E5
+Les identifiants sont persistants dans le modem LoRa-E5
 
 ### 2.2 Installation
 1. Cloner le dépôt : `git clone https://github.com/Jack-972/BeeLive.git`
