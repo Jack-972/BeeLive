@@ -10,7 +10,7 @@ Le système repose sur une architecture décentralisée garantissant la sécurit
 
 | Plateforme | Rôle | Login | Mot de passe |
 | :--- | :--- | :--- | :--- |
-| **BEEP.nl** | Standard de données mondial | or2021@yopmail.com | Sigfox21# |
+| **BEEP.nl** | Standard de données mondial | confidentiel | confidentiel |
 | **TTN** | Réseau LoRaWAN | Accès partagé via invitation | Voir console TTN |
 | **VPS** | API FastAPI & Alertes | Accès SSH | Clé RSA privée |
 
